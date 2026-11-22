@@ -26,23 +26,31 @@ def enviar_telegram_msg(msg):
 def enviar_telegram_foto(page, legenda):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
+    caminho_foto = f"passo_{int(time.time())}.png"
     try:
-        caminho_foto = f"passo_{int(time.time())}.png"
+        # Tira o print da tela atual
         page.screenshot(path=caminho_foto, full_page=True)
+        
+        # Envia a foto via multipart
         with open(caminho_foto, "rb") as f:
-            requests.post(
+            r = requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
                 data={"chat_id": TELEGRAM_CHAT_ID, "caption": legenda, "parse_mode": "HTML"},
                 files={"photo": f},
                 timeout=30,
             )
-        print(f"  📸 Print: {legenda}")
-        try:
-            os.remove(caminho_foto)
-        except Exception:
-            pass
+            if r.status_code != 200:
+                print(f"  ⚠️ Erro API Telegram: {r.text}")
+            else:
+                print(f"  📸 Print enviado: {legenda}")
+                
     except Exception as e:
-        print(f"  ⚠️ Erro print: {e}")
+        print(f"  ⚠️ Erro ao tirar/enviar print: {e}")
+    finally:
+        # Limpa o arquivo do servidor após enviar
+        if os.path.exists(caminho_foto):
+            try: os.remove(caminho_foto)
+            except: pass
 
 def gerar_dados_unicos():
     nomes = ["João", "Miguel", "Pedro", "Tiago", "André", "Rui", "Beatriz", "Inês", "Mariana", "Carolina"]
@@ -100,8 +108,6 @@ def processar_fluxo(page, cartao_str, index):
         # ================= PASSO 1: PRODUTO E CARRINHO =================
         print("  -> Acessando produto...")
         page.goto("https://grootpots.com/en/product/stand-farm-duo-2/", wait_until="domcontentloaded")
-
-        print("  -> Aguardando scripts carregarem...")
         page.wait_for_load_state("networkidle", timeout=15000)
         page.wait_for_timeout(3000)
 
@@ -113,7 +119,7 @@ def processar_fluxo(page, cartao_str, index):
         except Exception:
             pass
 
-        print("  -> Selecionando cor Verde (forçado)...")
+        print("  -> Selecionando cor Verde...")
         page.evaluate("""
             var swatches = document.querySelectorAll('.cfvsw-swatch-inner, .cfvsw-swatch-inner-inner');
             for (var i = 0; i < swatches.length; i++) {
@@ -125,7 +131,7 @@ def processar_fluxo(page, cartao_str, index):
         """)
         page.wait_for_timeout(3000)
 
-        print("  -> Adicionando ao carrinho (forçado)...")
+        print("  -> Adicionando ao carrinho...")
         try:
             page.evaluate("""
                 var btn = document.querySelector('button[name="add-to-cart"]');
@@ -137,11 +143,21 @@ def processar_fluxo(page, cartao_str, index):
         page.wait_for_timeout(5000)
         enviar_telegram_foto(page, "🛒 <b>Passo 1: Produto Adicionado</b>")
 
-        print("  -> Indo para o checkout...")
-        page.goto("https://grootpots.com/en/step/checkout-2/", wait_until="domcontentloaded")
-        page.wait_for_timeout(5000)
-
         # ================= PASSO 2: CHECKOUT =================
+        print("  -> Indo para o checkout...")
+        # Usando networkidle para garantir que os scripts do checkout carreguem
+        page.goto("https://grootpots.com/en/step/checkout-2/", wait_until="networkidle", timeout=60000)
+        page.wait_for_timeout(3000)
+
+        print("  -> Aguardando formulário aparecer...")
+        try:
+            # Espera até 30s o campo de email aparecer na tela
+            page.wait_for_selector("#billing_email", timeout=30000)
+        except Exception:
+            print("  ❌ Timeout: Campo de email não apareceu.")
+            enviar_telegram_foto(page, "❌ <b>Erro: Checkout não carregou (Timeout)</b>\nO site pode ter bloqueado o IP do Railway.")
+            return "ERRO", round(time.time() - tempo_inicio, 2)
+
         print("  -> Preenchendo dados...")
         try:
             page.locator("#billing_email").fill(email)
@@ -151,19 +167,15 @@ def processar_fluxo(page, cartao_str, index):
             page.locator("#billing_postcode").fill(cep)
             page.locator("#billing_city").fill(cidade)
 
-            try:
-                page.locator("#billing_phone").fill(telefone)
-            except Exception:
-                pass
-            try:
-                page.locator("#billing_nif").fill(nif)
-            except Exception:
-                pass
+            try: page.locator("#billing_phone").fill(telefone)
+            except Exception: pass
+            try: page.locator("#billing_nif").fill(nif)
+            except Exception: pass
 
             page.wait_for_timeout(2000)
         except Exception as e:
             print(f"     ⚠️ Erro ao preencher dados: {e}")
-            enviar_telegram_foto(page, "❌ <b>Erro no Checkout</b>")
+            enviar_telegram_foto(page, "❌ <b>Erro ao preencher o formulário</b>")
             return "ERRO", round(time.time() - tempo_inicio, 2)
 
         print("  -> Selecionando Cartão de Crédito...")
@@ -247,11 +259,12 @@ def processar_fluxo(page, cartao_str, index):
             return "DIE", round(time.time() - tempo_inicio, 2)
         else:
             print("  ❌ O site não redirecionou para o Credorax.")
-            enviar_telegram_foto(page, "❌ <b>Falha no Redirecionamento</b>")
+            enviar_telegram_foto(page, "❌ <b>Falha no Redirecionamento</b>\nNão foi para a tela de pagamento.")
             return "ERRO", round(time.time() - tempo_inicio, 2)
 
     except Exception as e:
         print(f"  ⚠️ Erro técnico: {e}")
+        enviar_telegram_foto(page, "❌ <b>Erro Crítico (Exception)</b>\nVerifique os logs no Railway.")
         return "ERRO", round(time.time() - tempo_inicio, 2)
 
 def testar(cartoes):
